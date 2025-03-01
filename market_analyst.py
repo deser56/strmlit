@@ -43,7 +43,7 @@ with st.sidebar:
     ticker = st.text_input("Asset Symbol", "AAPL").upper()
     primary_tf = st.selectbox("Primary Timeframe", ["1m", "5m", "15m", "30m", "1h", "1d", "1wk"])
     secondary_tf = st.selectbox("Secondary Timeframe", ["5m", "15m", "30m", "1h", "1d"])
-    lookback = st.slider("Analysis Window (Days)", 1, 365, 90)
+    lookback = st.slider("Analysis Window (Days)", 1, 7, 7)
     
     st.subheader("Advanced Features")
     enable_ml = st.checkbox("Enable ML Predictions", True)
