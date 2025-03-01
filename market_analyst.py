@@ -1,12 +1,12 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
+import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from talib import RSI, BBANDS, MACD
-import threading
 import websocket
 import json
+import threading
 
 # Configure Streamlit page
 st.set_page_config(page_title="Live Market Analyst", layout="wide")
@@ -26,170 +26,219 @@ with st.sidebar:
     show_macd = st.checkbox("MACD", True)
     show_bollinger = st.checkbox("Bollinger Bands", True)
 
-# Initialize WebSocket connection
+# WebSocket implementation
 def on_message(ws, message):
-    data = json.loads(message)
-    # Process real-time data here
-    st.session_state.latest_price = data['p']
+    try:
+        data = json.loads(message)
+        if 'p' in data:
+            st.session_state.latest_price = data['p']
+    except Exception as e:
+        st.error(f"WebSocket error: {str(e)}")
 
-def on_error(ws, error):
-    print(error)
-
-def on_close(ws, close_status_code, close_msg):
-    print("WebSocket closed")
-
-def on_open(ws):
-    print("WebSocket connection established")
-
-# Function to start WebSocket connection
 def start_websocket(ticker):
-    socket = f"wss://streamer.finance.yahoo.com/ws/{ticker.lower()}"
-    ws = websocket.WebSocketApp(socket,
-                              on_open=on_open,
-                              on_message=on_message,
-                              on_error=on_error,
-                              on_close=on_close)
+    ws = websocket.WebSocketApp(
+        f"wss://streamer.finance.yahoo.com/ws/{ticker.lower()}",
+        on_message=on_message,
+        on_error=lambda ws, err: st.error(f"WebSocket error: {str(err)}"),
+        on_close=lambda ws: st.warning("WebSocket connection closed")
+    )
     ws.run_forever()
 
-# Start WebSocket in background thread
+# Initialize WebSocket in background
 if 'ws_thread' not in st.session_state:
-    st.session_state.ws_thread = threading.Thread(target=start_websocket, args=(ticker,))
-    st.session_state.ws_thread.daemon = True
+    st.session_state.ws_thread = threading.Thread(target=start_websocket, args=(ticker,), daemon=True)
     st.session_state.ws_thread.start()
 
-# Fetch historical data
+# Enhanced data fetching with error handling
 @st.cache_data
 def get_historical_data(ticker, period, interval):
-    stock = yf.Ticker(ticker)
-    return stock.history(period=f"{period}d", interval=interval)
+    try:
+        return yf.Ticker(ticker).history(period=f"{period}d", interval=interval)
+    except Exception as e:
+        st.error(f"Failed to fetch data: {str(e)}")
+        return pd.DataFrame()
 
-# Calculate indicators
+# Technical indicator calculations using pandas
 def calculate_technical_indicators(df):
-    # RSI
-    df['RSI'] = RSI(df['Close'], timeperiod=14)
+    if df.empty:
+        return df
+    
+    # RSI Calculation
+    delta = df['Close'].diff()
+    gain = delta.where(delta > 0, 0)
+    loss = -delta.where(delta < 0, 0)
+    
+    avg_gain = gain.rolling(window=14, min_periods=1).mean()
+    avg_loss = loss.rolling(window=14, min_periods=1).mean()
+    
+    rs = avg_gain / avg_loss
+    df['RSI'] = 100 - (100 / (1 + rs))
     
     # Bollinger Bands
-    upper, middle, lower = BBANDS(df['Close'], timeperiod=20)
-    df['Upper Band'] = upper
-    df['Middle Band'] = middle
-    df['Lower Band'] = lower
+    df['Middle Band'] = df['Close'].rolling(window=20).mean()
+    std_dev = df['Close'].rolling(window=20).std()
+    df['Upper Band'] = df['Middle Band'] + (std_dev * 2)
+    df['Lower Band'] = df['Middle Band'] - (std_dev * 2)
     
-    # MACD
-    macd, signal, hist = MACD(df['Close'], fastperiod=12, slowperiod=26, signalperiod=9)
-    df['MACD'] = macd
-    df['Signal'] = signal
-    df['Histogram'] = hist
+    # MACD Calculation
+    ema12 = df['Close'].ewm(span=12, adjust=False).mean()
+    ema26 = df['Close'].ewm(span=26, adjust=False).mean()
+    df['MACD'] = ema12 - ema26
+    df['Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
+    df['Histogram'] = df['MACD'] - df['Signal']
     
     return df
 
-# Generate trading signals
+# Signal generation logic
 def generate_signals(df):
     signals = []
     
     # RSI Signals
-    if df['RSI'].iloc[-1] < 30:
-        signals.append(('RSI', 'BUY', df['RSI'].iloc[-1]))
-    elif df['RSI'].iloc[-1] > 70:
-        signals.append(('RSI', 'SELL', df['RSI'].iloc[-1]))
+    if not df.empty and 'RSI' in df.columns:
+        last_rsi = df['RSI'].iloc[-1]
+        if last_rsi < 30:
+            signals.append(('RSI', 'BUY', last_rsi))
+        elif last_rsi > 70:
+            signals.append(('RSI', 'SELL', last_rsi))
     
     # MACD Signals
-    if df['MACD'].iloc[-1] > df['Signal'].iloc[-1] and df['MACD'].iloc[-2] <= df['Signal'].iloc[-2]:
-        signals.append(('MACD', 'BUY', df['MACD'].iloc[-1]))
-    elif df['MACD'].iloc[-1] < df['Signal'].iloc[-1] and df['MACD'].iloc[-2] >= df['Signal'].iloc[-2]:
-        signals.append(('MACD', 'SELL', df['MACD'].iloc[-1]))
+    if not df.empty and 'MACD' in df.columns and 'Signal' in df.columns:
+        if len(df) >= 2:
+            last_macd = df['MACD'].iloc[-1]
+            last_signal = df['Signal'].iloc[-1]
+            prev_macd = df['MACD'].iloc[-2]
+            prev_signal = df['Signal'].iloc[-2]
+            
+            if last_macd > last_signal and prev_macd <= prev_signal:
+                signals.append(('MACD', 'BUY', last_macd))
+            elif last_macd < last_signal and prev_macd >= prev_signal:
+                signals.append(('MACD', 'SELL', last_macd))
     
     return signals
 
-# Create interactive chart
+# Enhanced chart visualization
 def create_chart(df, show_rsi, show_macd, show_bollinger):
-    fig = make_subplots(rows=3 if show_rsi or show_macd else 1, cols=1,
+    fig = make_subplots(rows=3 if show_rsi and show_macd else 2, cols=1,
                         shared_xaxes=True,
                         vertical_spacing=0.05,
                         row_heights=[0.6, 0.2, 0.2] if show_rsi and show_macd else [0.8, 0.2])
-
+    
     # Price Chart
-    fig.add_trace(go.Candlestick(x=df.index,
-                                 open=df['Open'],
-                                 high=df['High'],
-                                 low=df['Low'],
-                                 close=df['Close'],
-                                 name='Price'),
-                  row=1, col=1)
-
+    fig.add_trace(go.Candlestick(
+        x=df.index,
+        open=df['Open'],
+        high=df['High'],
+        low=df['Low'],
+        close=df['Close'],
+        name='Price',
+        increasing_line_color='#2ECC71',
+        decreasing_line_color='#E74C3C'
+    ), row=1, col=1)
+    
     # Bollinger Bands
     if show_bollinger:
-        fig.add_trace(go.Scatter(x=df.index, y=df['Upper Band'],
-                                line=dict(color='rgba(255, 0, 0, 0.5)'),
-                                name='Upper Band'),
-                     row=1, col=1)
-        fig.add_trace(go.Scatter(x=df.index, y=df['Middle Band'],
-                                line=dict(color='rgba(0, 255, 0, 0.5)'),
-                                name='Middle Band'),
-                     row=1, col=1)
-        fig.add_trace(go.Scatter(x=df.index, y=df['Lower Band'],
-                                line=dict(color='rgba(0, 0, 255, 0.5)'),
-                                name='Lower Band'),
-                     row=1, col=1)
-
+        for band, color in zip(['Upper Band', 'Middle Band', 'Lower Band'], 
+                             ['#3498DB', '#F1C40F', '#E74C3C']):
+            fig.add_trace(go.Scatter(
+                x=df.index,
+                y=df[band],
+                line=dict(color=color, width=1.5),
+                name=band
+            ), row=1, col=1)
+    
     # RSI
     if show_rsi:
-        fig.add_trace(go.Scatter(x=df.index, y=df['RSI'],
-                                line=dict(color='purple'),
-                                name='RSI'),
-                     row=2, col=1)
-        fig.add_hline(y=30, row=2, col=1, line_dash="dot", line_color="green")
-        fig.add_hline(y=70, row=2, col=1, line_dash="dot", line_color="red")
-
+        fig.add_trace(go.Scatter(
+            x=df.index,
+            y=df['RSI'],
+            line=dict(color='#9B59B6', width=2),
+            name='RSI'
+        ), row=2, col=1)
+        fig.add_hline(y=30, row=2, col=1, line_dash="dot", line_color="#2ECC71")
+        fig.add_hline(y=70, row=2, col=1, line_dash="dot", line_color="#E74C3C")
+    
     # MACD
     if show_macd:
-        fig.add_trace(go.Bar(x=df.index, y=df['Histogram'],
-                           name='MACD Histogram',
-                           marker_color=np.where(df['Histogram'] < 0, 'red', 'green')),
-                     row=3 if show_rsi else 2, col=1)
-        fig.add_trace(go.Scatter(x=df.index, y=df['MACD'],
-                                line=dict(color='blue'),
-                                name='MACD'),
-                     row=3 if show_rsi else 2, col=1)
-        fig.add_trace(go.Scatter(x=df.index, y=df['Signal'],
-                                line=dict(color='orange'),
-                                name='Signal'),
-                     row=3 if show_rsi else 2, col=1)
-
-    fig.update_layout(height=800,
-                      xaxis_rangeslider_visible=False,
-                      template='plotly_dark',
-                      hovermode='x unified')
+        row_position = 3 if show_rsi else 2
+        fig.add_trace(go.Bar(
+            x=df.index,
+            y=df['Histogram'],
+            name='Histogram',
+            marker_color=np.where(df['Histogram'] < 0, '#E74C3C', '#2ECC71')
+        ), row=row_position, col=1)
+        
+        for line, color in zip(['MACD', 'Signal'], ['#3498DB', '#F1C40F']):
+            fig.add_trace(go.Scatter(
+                x=df.index,
+                y=df[line],
+                line=dict(color=color, width=1.5),
+                name=line
+            ), row=row_position, col=1)
+    
+    fig.update_layout(
+        height=800,
+        xaxis_rangeslider_visible=False,
+        template='plotly_dark',
+        hovermode='x unified',
+        margin=dict(t=40, b=40)
+    )
     
     return fig
 
-# Main app logic
+# Main application logic
 try:
-    # Get data
     df = get_historical_data(ticker, lookback, time_interval)
-    df = calculate_technical_indicators(df)
-    
-    # Generate signals
-    signals = generate_signals(df)
-    
-    # Display latest price
-    if 'latest_price' in st.session_state:
-        st.markdown(f"**Latest Price:** ${st.session_state.latest_price:.2f}")
-    
-    # Display signals
-    if signals:
-        st.subheader("Trading Signals")
-        cols = st.columns(len(signals))
-        for col, (indicator, signal, value) in zip(cols, signals):
-            color = 'green' if signal == 'BUY' else 'red'
-            col.markdown(f"<h3 style='color:{color}'>{indicator} {signal}</h3>", unsafe_allow_html=True)
-            col.write(f"Value: {value:.2f}")
-    
-    # Show chart
-    st.plotly_chart(create_chart(df, show_rsi, show_macd, show_bollinger), use_container_width=True)
-    
-    # Data table
-    with st.expander("View Raw Data"):
-        st.dataframe(df.tail(20).style.background_gradient(cmap='viridis'))
+    if not df.empty:
+        df = calculate_technical_indicators(df)
+        signals = generate_signals(df)
+        
+        # Display real-time information
+        col1, col2 = st.columns(2)
+        with col1:
+            if 'latest_price' in st.session_state:
+                st.metric(f"Current {ticker} Price", 
+                          f"${st.session_state.latest_price:.2f}",
+                          delta=f"{df['Close'].iloc[-1] - df['Close'].iloc[-2]:.2f}")
+        
+        with col2:
+            if signals:
+                st.success("Active Trading Signals Detected")
+            else:
+                st.info("No Strong Signals Currently")
+        
+        # Display signals
+        if signals:
+            with st.expander("Detailed Trading Signals", expanded=True):
+                for indicator, signal, value in signals:
+                    st.write(f"**{indicator}** ({value:.2f}): {signal} signal")
+        
+        # Display chart
+        st.plotly_chart(create_chart(df, show_rsi, show_macd, show_bollinger), 
+                       use_container_width=True)
+        
+        # Data summary
+        with st.expander("Technical Summary"):
+            cols = st.columns(4)
+            metrics = {
+                'RSI': df['RSI'].iloc[-1],
+                'MACD': df['MACD'].iloc[-1],
+                'Upper Band': df['Upper Band'].iloc[-1],
+                'Lower Band': df['Lower Band'].iloc[-1]
+            }
+            for col, (metric, value) in zip(cols, metrics.items()):
+                col.metric(metric, f"{value:.2f}")
+                
+        # Raw data
+        with st.expander("Historical Data Preview"):
+            st.dataframe(df.tail(10).style.format({
+                'Open': '{:.2f}',
+                'High': '{:.2f}',
+                'Low': '{:.2f}',
+                'Close': '{:.2f}',
+                'RSI': '{:.2f}',
+                'MACD': '{:.2f}',
+                'Signal': '{:.2f}'
+            }).background_gradient(cmap='viridis'))
 
 except Exception as e:
-    st.error(f"Error fetching data: {str(e)}")
+    st.error(f"Application error: {str(e)}")
