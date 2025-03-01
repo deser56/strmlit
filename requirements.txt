@@ -2,6 +2,7 @@ streamlit
 yfinance 
 pandas 
 plotly 
-numpy 
+numpy
+TA-Lib 
 ta-lib 
 websocket-client
