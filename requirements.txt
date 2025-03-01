@@ -4,3 +4,4 @@ pandas
 plotly 
 numpy
 websocket-client
+matplotlib
