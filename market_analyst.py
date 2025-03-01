@@ -20,13 +20,30 @@ st.set_page_config(page_title="Quantum Trader Pro", layout="wide", page_icon="�
 if 'ml_models' not in st.session_state:
     st.session_state.ml_models = {}
 
+@st.cache_data
+def get_multi_tf_data(ticker, primary_tf, secondary_tf, lookback):
+    def fetch_data(interval):
+        try:
+            data = yf.Ticker(ticker).history(period=f"{lookback}d", interval=interval)
+            if data.empty:
+                st.error(f"No data found for {ticker} with interval {interval}")
+            return data
+        except Exception as e:
+            st.error(f"Data fetch error: {str(e)}")
+            return pd.DataFrame()
+    
+    primary = fetch_data(primary_tf)
+    secondary = fetch_data(secondary_tf)
+    
+    return primary, secondary  
+
 # Advanced sidebar controls
 with st.sidebar:
     st.header("Quantum Configuration ⚛️")
     ticker = st.text_input("Asset Symbol", "AAPL").upper()
     primary_tf = st.selectbox("Primary Timeframe", ["1m", "5m", "15m", "30m", "1h", "1d", "1wk"])
     secondary_tf = st.selectbox("Secondary Timeframe", ["5m", "15m", "30m", "1h", "1d"])
-    lookback = st.slider("Analysis Window (Days)", 1, 7, 7)
+    lookback = st.slider("Analysis Window (Days)", 1, 365, 90)
     
     st.subheader("Advanced Features")
     enable_ml = st.checkbox("Enable ML Predictions", True)
@@ -35,31 +52,34 @@ with st.sidebar:
     enable_orderflow = st.checkbox("Order Flow Analysis", False)
     risk_per_trade = st.number_input("Risk % per Trade", 0.1, 5.0, 1.0)
 
-# Multi-timeframe data fetching
-@st.cache_data
-def get_multi_tf_data(ticker, primary_tf, secondary_tf, lookback):
-    def fetch_data(interval):
-        return yf.Ticker(ticker).history(period=f"{lookback}d", interval=interval)
-    
-    primary = fetch_data(primary_tf)
-    secondary = fetch_data(secondary_tf)
-    
-    return primary, secondary
-
-# Advanced technical analysis
+# Enhanced technical indicator calculations
 def calculate_advanced_indicators(df):
+    # Core technical indicators (always calculated)
+    df['RSI'] = ta.momentum.RSIIndicator(df['Close']).rsi()
+    macd = ta.trend.MACD(df['Close'])
+    df['MACD'] = macd.macd()
+    df['MACD_Signal'] = macd.macd_signal()
+    df['MACD_Hist'] = macd.macd_diff()
+    
+    # Volatility indicators
+    df['ATR'] = ta.volatility.AverageTrueRange(
+        df['High'], df['Low'], df['Close']
+    ).average_true_range()
+    
+    # Volume indicators
+    df['VWAP'] = ta.volume.VolumeWeightedAveragePrice(
+        df['High'], df['Low'], df['Close'], df['Volume']
+    ).volume_weighted_average_price()
+    
     # Ichimoku Cloud
     if enable_ichimoku:
-        high_9 = df['High'].rolling(9).max()
-        low_9 = df['Low'].rolling(9).min()
-        df['Conversion'] = (high_9 + low_9) / 2
-        
-        high_26 = df['High'].rolling(26).max()
-        low_26 = df['Low'].rolling(26).min()
-        df['Baseline'] = (high_26 + low_26) / 2
-        
-        df['SpanA'] = ((df['Conversion'] + df['Baseline']) / 2).shift(26)
-        df['SpanB'] = ((df['High'].rolling(52).max() + df['Low'].rolling(52).min()) / 2).shift(26)
+        ichimoku = ta.trend.IchimokuIndicator(
+            df['High'], df['Low']
+        )
+        df['Ichimoku_Conversion'] = ichimoku.ichimoku_conversion_line()
+        df['Ichimoku_Base'] = ichimoku.ichimoku_base_line()
+        df['Ichimoku_SpanA'] = ichimoku.ichimoku_a()
+        df['Ichimoku_SpanB'] = ichimoku.ichimoku_b()
     
     # Fibonacci Levels
     if enable_fib:
@@ -73,39 +93,52 @@ def calculate_advanced_indicators(df):
             '0.618': recent_high - diff * 0.618,
             '0.786': recent_high - diff * 0.786
         }
-        df['Fib_0.236'] = fib_levels['0.236']
-        df['Fib_0.382'] = fib_levels['0.382']
-        df['Fib_0.5'] = fib_levels['0.5']
-        df['Fib_0.618'] = fib_levels['0.618']
-        df['Fib_0.786'] = fib_levels['0.786']
+        for level, value in fib_levels.items():
+            df[f'Fib_{level}'] = value
     
     # Advanced Momentum Indicators
-    df['Vortex'] = ta.trend.VortexIndicator(df['High'], df['Low'], df['Close']).vortex_indicator_diff()
-    df['KST'] = ta.trend.KSTIndicator(df['Close']).kst_diff()
-    df['MFI'] = ta.volume.MFIIndicator(df['High'], df['Low'], df['Close'], df['Volume']).money_flow_index()
+    df['Vortex'] = ta.trend.VortexIndicator(
+        df['High'], df['Low'], df['Close']
+    ).vortex_indicator_diff()
     
-    # Volume Profile
-    if enable_orderflow:
-        df['VP'] = df['Volume'] * (df['High'] + df['Low'] + df['Close']) / 3
-        df['VWAP'] = df['VP'].cumsum() / df['Volume'].cumsum()
+    df['KST'] = ta.trend.KSTIndicator(
+        df['Close']
+    ).kst_diff()
     
     return df
 
-# Machine Learning Prediction Engine
+# Machine Learning Prediction Engine (updated)
 def create_ml_model(df):
-    features = ['RSI', 'MACD', 'VWAP', 'MFI', 'Vortex', 'KST']
-    target = 'Close'
+    # Ensure all features exist
+    required_features = [
+        'RSI', 'MACD', 'VWAP', 'ATR', 'Vortex', 'KST'
+    ]
+    
+    # Check for existing features
+    available_features = [f for f in required_features if f in df.columns]
+    
+    if not available_features:
+        return None
     
     model = Pipeline([
         ('scaler', MinMaxScaler()),
-        ('regressor', RandomForestRegressor(n_estimators=100, random_state=42))
+        ('regressor', RandomForestRegressor(
+            n_estimators=200, 
+            max_depth=10,
+            random_state=42,
+            n_jobs=-1
+        ))
     ])
     
-    X = df[features].dropna()
-    y = df[target].shift(-3).dropna()
-    X = X.iloc[:-3]
+    X = df[available_features].dropna()
+    y = df['Close'].shift(-3).dropna()
     
-    if not X.empty and not y.empty:
+    # Align indices
+    common_idx = X.index.intersection(y.index)
+    X = X.loc[common_idx]
+    y = y.loc[common_idx]
+    
+    if len(X) > 100 and len(y) > 100:
         model.fit(X, y)
         return model
     return None
@@ -245,12 +278,14 @@ try:
     
     # Fetch and process data
     primary_df, secondary_df = get_multi_tf_data(ticker, primary_tf, secondary_tf, lookback)
-    primary_df = calculate_advanced_indicators(primary_df)
     
-    # Initialize WebSocket
-    if 'ws' not in st.session_state:
-        st.session_state.ws = QuantumWebSocket(ticker)
-        st.session_state.ws.thread.start()
+    if not primary_df.empty and not secondary_df.empty:
+        primary_df = calculate_advanced_indicators(primary_df)
+        
+        # Initialize WebSocket
+        if 'ws' not in st.session_state:
+            st.session_state.ws = QuantumWebSocket(ticker)
+            st.session_state.ws.start()
     
     # Machine Learning Training
     if enable_ml:
