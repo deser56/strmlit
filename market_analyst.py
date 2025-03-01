@@ -47,9 +47,9 @@ with st.sidebar:
     
     st.subheader("Advanced Features")
     enable_ml = st.checkbox("Enable ML Predictions", True)
-    enable_ichimoku = st.checkbox("Ichimoku Cloud", True)
-    enable_fib = st.checkbox("Fibonacci Retracement", True)
-    enable_orderflow = st.checkbox("Order Flow Analysis", False)
+    #enable_ichimoku = st.checkbox("Ichimoku Cloud", True)
+    #enable_fib = st.checkbox("Fibonacci Retracement", True)
+    #enable_orderflow = st.checkbox("Order Flow Analysis", False)
     risk_per_trade = st.number_input("Risk % per Trade", 0.1, 5.0, 1.0)
 
 # Enhanced technical indicator calculations
