@@ -242,7 +242,9 @@ def create_advanced_chart(primary_df, secondary_df):
                      hovermode='x unified')
     return fig
 
-# WebSocket Enhanced Implementation
+
+
+# WebSocket Implementation
 class QuantumWebSocket:
     def __init__(self, ticker):
         self.ws = websocket.WebSocketApp(
@@ -253,24 +255,36 @@ class QuantumWebSocket:
         )
         self.data_queue = []
         self.thread = threading.Thread(target=self.ws.run_forever)
+        self.thread.daemon = True
     
     def on_message(self, ws, message):
-        data = json.loads(message)
-        self.data_queue.append(data)
-        if len(self.data_queue) > 100:
-            self.process_batch()
-    
+        try:
+            data = json.loads(message)
+            self.data_queue.append(data)
+            if len(self.data_queue) > 100:
+                self.process_batch()
+        except Exception as e:
+            st.error(f"Message processing error: {str(e)}")
+
     def process_batch(self):
-        batch = pd.DataFrame(self.data_queue)
-        # Implement complex event processing here
-        st.session_state.latest_data = batch
-        self.data_queue = []
-    
+        try:
+            batch = pd.DataFrame(self.data_queue)
+            if not batch.empty:
+                st.session_state.latest_data = batch
+            self.data_queue = []
+        except Exception as e:
+            st.error(f"Batch processing error: {str(e)}")
+
     def on_error(self, ws, error):
         st.error(f"Quantum Feed Error: {error}")
-    
+
     def on_close(self, ws):
         st.warning("Quantum Feed Disconnected")
+
+    def start(self):
+        self.thread.start()
+
+
 
 # Main Application
 try:
