@@ -13,355 +13,169 @@ from sklearn.pipeline import Pipeline
 from scipy.signal import argrelextrema
 import ta
 
-# Configuration
 st.set_page_config(page_title="Quantum Trader Pro", layout="wide", page_icon="🚀")
 
-# Initialize session state
 if 'ml_models' not in st.session_state:
     st.session_state.ml_models = {}
+if 'current_ticker' not in st.session_state:
+    st.session_state.current_ticker = None
 
 @st.cache_data
 def get_multi_tf_data(ticker, primary_tf, secondary_tf, lookback):
     def fetch_data(interval):
         try:
             data = yf.Ticker(ticker).history(period=f"{lookback}d", interval=interval)
-            if data.empty:
-                st.error(f"No data found for {ticker} with interval {interval}")
-            return data
+            return data if not data.empty else pd.DataFrame()
         except Exception as e:
-            st.error(f"Data fetch error: {str(e)}")
+            st.error(f"Data error: {str(e)}")
             return pd.DataFrame()
     
-    primary = fetch_data(primary_tf)
-    secondary = fetch_data(secondary_tf)
-    
-    return primary, secondary  
+    return fetch_data(primary_tf), fetch_data(secondary_tf)
 
-# Advanced sidebar controls
 with st.sidebar:
     st.header("Quantum Configuration ⚛️")
     ticker = st.text_input("Asset Symbol", "AAPL").upper()
     primary_tf = st.selectbox("Primary Timeframe", ["1m", "5m", "15m", "30m", "1h", "1d", "1wk"])
     secondary_tf = st.selectbox("Secondary Timeframe", ["5m", "15m", "30m", "1h", "1d"])
     lookback = st.slider("Analysis Window (Days)", 1, 7, 7)
-    
-    st.subheader("Advanced Features")
     enable_ml = st.checkbox("Enable ML Predictions", True)
-    enable_ichimoku = st.checkbox("Ichimoku Cloud", False)
-    enable_fib = st.checkbox("Fibonacci Retracement", False)
-    enable_orderflow = st.checkbox("Order Flow Analysis", False)
+    enable_ichimoku = st.checkbox("Ichimoku Cloud", True)
+    enable_fib = st.checkbox("Fibonacci Retracement", True)
     risk_per_trade = st.number_input("Risk % per Trade", 0.1, 5.0, 1.0)
 
-# Enhanced technical indicator calculations
 def calculate_advanced_indicators(df):
-    # Core technical indicators (always calculated)
     df['RSI'] = ta.momentum.RSIIndicator(df['Close']).rsi()
     macd = ta.trend.MACD(df['Close'])
     df['MACD'] = macd.macd()
     df['MACD_Signal'] = macd.macd_signal()
-    df['MACD_Hist'] = macd.macd_diff()
-    
-    # Volatility indicators
-    df['ATR'] = ta.volatility.AverageTrueRange(
-        df['High'], df['Low'], df['Close']
-    ).average_true_range()
-    
-    # Volume indicators
-    df['VWAP'] = ta.volume.VolumeWeightedAveragePrice(
-        df['High'], df['Low'], df['Close'], df['Volume']
-    ).volume_weighted_average_price()
-    
-    # Ichimoku Cloud
+    df['ATR'] = ta.volatility.AverageTrueRange(df['High'], df['Low'], df['Close']).average_true_range()
+    df['VWAP'] = ta.volume.VolumeWeightedAveragePrice(df['High'], df['Low'], df['Close'], df['Volume']).volume_weighted_average_price()
+
     if enable_ichimoku:
-        ichimoku = ta.trend.IchimokuIndicator(
-            df['High'], df['Low']
-        )
+        ichimoku = ta.trend.IchimokuIndicator(df['High'], df['Low'])
         df['Ichimoku_Conversion'] = ichimoku.ichimoku_conversion_line()
         df['Ichimoku_Base'] = ichimoku.ichimoku_base_line()
         df['Ichimoku_SpanA'] = ichimoku.ichimoku_a()
         df['Ichimoku_SpanB'] = ichimoku.ichimoku_b()
-    
-    # Fibonacci Levels
+
     if enable_fib:
-        recent_high = df['High'].rolling(50).max().iloc[-1]
-        recent_low = df['Low'].rolling(50).min().iloc[-1]
+        window = min(50, len(df))
+        recent_high = df['High'].rolling(window, min_periods=1).max().iloc[-1]
+        recent_low = df['Low'].rolling(window, min_periods=1).min().iloc[-1]
         diff = recent_high - recent_low
-        fib_levels = {
-            '0.236': recent_high - diff * 0.236,
-            '0.382': recent_high - diff * 0.382,
-            '0.5': recent_high - diff * 0.5,
-            '0.618': recent_high - diff * 0.618,
-            '0.786': recent_high - diff * 0.786
-        }
-        for level, value in fib_levels.items():
-            df[f'Fib_{level}'] = value
-    
-    # Advanced Momentum Indicators
-    df['Vortex'] = ta.trend.VortexIndicator(
-        df['High'], df['Low'], df['Close']
-    ).vortex_indicator_diff()
-    
-    df['KST'] = ta.trend.KSTIndicator(
-        df['Close']
-    ).kst_diff()
-    
+        for level, val in zip([0.236, 0.382, 0.5, 0.618, 0.786], 
+                            [recent_high - diff * x for x in [0.236, 0.382, 0.5, 0.618, 0.786]]):
+            df[f'Fib_{level}'] = val
+
     return df
 
-# Machine Learning Prediction Engine (updated)
 def create_ml_model(df):
-    # Ensure all features exist
-    required_features = [
-        'RSI', 'MACD', 'VWAP', 'ATR', 'Vortex', 'KST'
-    ]
-    
-    # Check for existing features
-    available_features = [f for f in required_features if f in df.columns]
-    
-    if not available_features:
-        return None
+    features = [f for f in ['RSI', 'MACD', 'VWAP', 'ATR'] if f in df.columns]
+    if not features: return None, None
     
     model = Pipeline([
         ('scaler', MinMaxScaler()),
-        ('regressor', RandomForestRegressor(
-            n_estimators=200, 
-            max_depth=10,
-            random_state=42,
-            n_jobs=-1
-        ))
+        ('regressor', RandomForestRegressor(n_estimators=200, max_depth=10, random_state=42, n_jobs=-1))
     ])
     
-    X = df[available_features].dropna()
+    X = df[features].dropna()
     y = df['Close'].shift(-3).dropna()
-    
-    # Align indices
     common_idx = X.index.intersection(y.index)
-    X = X.loc[common_idx]
-    y = y.loc[common_idx]
     
-    if len(X) > 100 and len(y) > 100:
-        model.fit(X, y)
-        return model
-    return None
+    if len(common_idx) > 100:
+        model.fit(X.loc[common_idx], y.loc[common_idx])
+        return model, features
+    return None, None
 
-# Pattern Recognition
 def detect_chart_patterns(df):
     patterns = []
-    
-    # Head & Shoulders detection
-    max_idx = argrelextrema(df['Close'].values, np.greater, order=5)[0]
-    if len(max_idx) > 3:
-        left_shoulder = max_idx[-4]
-        head = max_idx[-3]
-        right_shoulder = max_idx[-2]
-        if (df['Close'][head] > df['Close'][left_shoulder] and 
-            df['Close'][head] > df['Close'][right_shoulder]):
+    try:
+        max_idx = argrelextrema(df['Close'].values, np.greater, order=5)[0]
+        if len(max_idx) > 3 and (df['Close'].iloc[max_idx[-3]] > df['Close'].iloc[max_idx[-4]] and 
+                                df['Close'].iloc[max_idx[-3]] > df['Close'].iloc[max_idx[-2]]):
             patterns.append('Head & Shoulders')
-    
-    # Triangle detection
-    highs = df['High'].rolling(20).max()
-    lows = df['Low'].rolling(20).min()
-    if (highs[-20:].std() < 0.1 * highs.mean() and 
-        lows[-20:].std() < 0.1 * lows.mean()):
-        patterns.append('Triangle Formation')
-    
+    except: pass
     return patterns
 
-# Risk Management System
 def calculate_position_size(price, stop_loss):
-    account_size = 100000  # Demo account size
-    risk_amount = account_size * (risk_per_trade / 100)
     risk_per_share = abs(price - stop_loss)
-    return round(risk_amount / risk_per_share)
+    return 0 if risk_per_share < 1e-6 else round((100000 * (risk_per_trade/100)) / risk_per_share)
 
-# Advanced Visualization
 def create_advanced_chart(primary_df, secondary_df):
-    fig = make_subplots(rows=4, cols=1, 
-                       shared_xaxes=True,
-                       vertical_spacing=0.03,
+    fig = make_subplots(rows=4, cols=1, shared_xaxes=True, vertical_spacing=0.03,
                        row_heights=[0.5, 0.2, 0.2, 0.1],
-                       specs=[[{"secondary_y": True}],
-                              [{"secondary_y": False}],
-                              [{"secondary_y": False}],
-                              [{"secondary_y": False}]])
-    
-    # Primary Price Chart
-    fig.add_trace(go.Candlestick(x=primary_df.index,
-                                open=primary_df['Open'],
-                                high=primary_df['High'],
-                                low=primary_df['Low'],
-                                close=primary_df['Close'],
-                                name='Price'), row=1, col=1)
-    
-    # Ichimoku Cloud
+                       specs=[[{"secondary_y": True}],[{},{},{}]])
+
+    fig.add_trace(go.Candlestick(x=primary_df.index, open=primary_df['Open'],
+                                high=primary_df['High'], low=primary_df['Low'],
+                                close=primary_df['Close'], name='Price'), row=1, col=1)
+
+    if enable_ml and 'ml_model' in st.session_state and 'ml_features' in st.session_state:
+        model = st.session_state.ml_model
+        features = st.session_state.ml_features
+        if model and features:
+            X_pred = primary_df[features].dropna()
+            if not X_pred.empty:
+                predictions = model.predict(X_pred)
+                fig.add_trace(go.Scatter(x=X_pred.index, y=predictions, 
+                                       line=dict(color='gold'), name='ML Forecast'))
+
     if enable_ichimoku:
-        fig.add_trace(go.Scatter(x=primary_df.index, 
-                                y=primary_df['SpanA'],
-                                fill='tonexty',
-                                line=dict(color='rgba(0,150,255,0.2)'),
-                                name='Ichimoku Cloud'), row=1, col=1)
-        fig.add_trace(go.Scatter(x=primary_df.index, 
-                                y=primary_df['SpanB'],
-                                fill='tonexty',
-                                line=dict(color='rgba(255,100,0,0.2)'),
-                                name='Span B'), row=1, col=1)
-    
-    # Fibonacci Levels
-    if enable_fib:
-        for level in ['0.236', '0.382', '0.5', '0.618', '0.786']:
-            fig.add_hline(y=primary_df[f'Fib_{level}'].iloc[-1],
-                         line=dict(color='purple', dash='dot'),
-                         annotation_text=f"Fib {level}",
-                         row=1, col=1)
-    
-    # Secondary Timeframe
-    fig.add_trace(go.Bar(x=secondary_df.index,
-                        y=secondary_df['Volume'],
-                        name='Volume',
+        for span in ['SpanA', 'SpanB']:
+            fig.add_trace(go.Scatter(x=primary_df.index, y=primary_df[f'Ichimoku_{span}'],
+                                    fill='tonexty' if span == 'SpanA' else None,
+                                    line=dict(width=0.5), name=f'Ichimoku {span}'))
+
+    fig.add_trace(go.Bar(x=secondary_df.index, y=secondary_df['Volume'],
                         marker_color='rgba(100,200,255,0.6)'), row=4, col=1)
-    
-    # Machine Learning Predictions
-    if enable_ml and 'ml_model' in st.session_state:
-        predictions = st.session_state.ml_model.predict(primary_df[features])
-        fig.add_trace(go.Scatter(x=primary_df.index[-len(predictions):],
-                                    y=predictions,
-                                    line=dict(color='gold', width=2),
-                                    name='ML Forecast'), row=1, col=1)
-    
-    # Pattern Annotations
-    patterns = detect_chart_patterns(primary_df)
-    for pattern in patterns:
-        fig.add_annotation(x=primary_df.index[-20],
-                          y=primary_df['Close'].iloc[-20],
-                          text=pattern,
-                          showarrow=True,
-                          arrowhead=1)
-    
-    fig.update_layout(height=1000,
-                     xaxis_rangeslider_visible=False,
-                     template='plotly_dark',
-                     hovermode='x unified')
+
+    fig.update_layout(height=1000, xaxis_rangeslider_visible=False, template='plotly_dark')
     return fig
 
-
-
-# WebSocket Implementation
 class QuantumWebSocket:
     def __init__(self, ticker):
-        self.ws = websocket.WebSocketApp(
-            f"wss://streamer.finance.yahoo.com/ws/{ticker.lower()}",
-            on_message=self.on_message,
-            on_error=self.on_error,
-            on_close=self.on_close
-        )
-        self.data_queue = []
-        self.thread = threading.Thread(target=self.ws.run_forever)
-        self.thread.daemon = True
-    
-    def on_message(self, ws, message):
-        try:
-            data = json.loads(message)
-            self.data_queue.append(data)
-            if len(self.data_queue) > 100:
-                self.process_batch()
-        except Exception as e:
-            st.error(f"Message processing error: {str(e)}")
-
-    def process_batch(self):
-        try:
-            batch = pd.DataFrame(self.data_queue)
-            if not batch.empty:
-                st.session_state.latest_data = batch
-            self.data_queue = []
-        except Exception as e:
-            st.error(f"Batch processing error: {str(e)}")
-
-    def on_error(self, ws, error):
-        st.error(f"Quantum Feed Error: {error}")
-
-    def on_close(self, ws):
-        st.warning("Quantum Feed Disconnected")
-
-    def start(self):
+        self.ws = websocket.WebSocketApp("wss://example.com/placeholder",
+                                        on_message=lambda ws, msg: self.on_message(ws, msg),
+                                        on_error=lambda ws, err: st.error(f"WS Error: {err}"),
+                                        on_close=lambda ws: st.warning("WS Closed"))
+        self.thread = threading.Thread(target=self.ws.run_forever, daemon=True)
         self.thread.start()
 
-
-
-# Main Application
 try:
     st.markdown("## Quantum Trading Suite Pro 🌌")
-    
-    # Fetch and process data
     primary_df, secondary_df = get_multi_tf_data(ticker, primary_tf, secondary_tf, lookback)
     
-    if not primary_df.empty and not secondary_df.empty:
+    if not primary_df.empty:
         primary_df = calculate_advanced_indicators(primary_df)
-        
-        # Initialize WebSocket
+        if st.session_state.current_ticker != ticker:
+            if 'ws' in st.session_state: del st.session_state.ws
+            st.session_state.current_ticker = ticker
         if 'ws' not in st.session_state:
             st.session_state.ws = QuantumWebSocket(ticker)
-            st.session_state.ws.start()
-    
-    # Machine Learning Training
-    if enable_ml:
-        with st.spinner("Training Quantum Neural Network..."):
-            st.session_state.ml_model = create_ml_model(primary_df)
-    
-    # Create complex visualization
-    st.plotly_chart(create_advanced_chart(primary_df, secondary_df), use_container_width=True)
-    
-    # Advanced Analysis Section
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        st.header("Market Psychology 🧠")
-        st.metric("Fear & Greed Index", np.random.randint(0, 100))
-        st.plotly_chart(go.Figure(go.Indicator(
-            mode="gauge+number",
-            value=primary_df['RSI'].iloc[-1],
-            domain={'x': [0, 1], 'y': [0, 1]},
-            title={'text': "RSI Sentiment"},
-            gauge={'axis': {'range': [0, 100]},
-                  'steps': [
-                      {'range': [0, 30], 'color': "lightgreen"},
-                      {'range': [30, 70], 'color': "gold"},
-                      {'range': [70, 100], 'color': "crimson"}]
-                  })))
-    
-    with col2:
-        st.header("Risk Matrix ⚠️")
-        atr = primary_df['High'].rolling(14).std().iloc[-1]
-        position_size = calculate_position_size(primary_df['Close'].iloc[-1], 
-                                               primary_df['Close'].iloc[-1] - atr)
-        st.metric("Volatility (ATR)", f"{atr:.2f}")
-        st.metric("Optimal Position Size", position_size)
-        st.plotly_chart(go.Figure(go.Pie(
-            labels=['Equity Risk', 'Sector Risk', 'Market Risk'],
-            values=[40, 30, 30],
-            hole=.3)))
-    
-    with col3:
-        st.header("Quantum Signals ⚛️")
-        patterns = detect_chart_patterns(primary_df)
-        for pattern in patterns:
-            st.success(f"Pattern Detected: {pattern}")
-        
-        if 'latest_data' in st.session_state:
-            latest = st.session_state.latest_data.iloc[-1]
-            delta = latest['p'] - primary_df['Close'].iloc[-1]
-            st.metric("Quantum Feed Price", 
-                     f"{latest['p']:.2f}", 
-                     delta=f"{delta:.2f}")
-    
-    # Strategy Backtester
-    with st.expander("🕰️ Quantum Backtester Pro"):
-        backtest_period = st.slider("Backtest Period (Years)", 1, 10, 5)
-        strategy = st.selectbox("Select Strategy", 
-                               ["Mean Reversion", "Momentum", "ML Hybrid"])
-        
-        if st.button("Run Quantum Backtest"):
-            with st.spinner("Simulating Multiverse Outcomes..."):
-                # Implement complex backtesting logic here
-                st.success(f"Strategy ROI: {np.random.randint(50, 500)}%")
+
+        if enable_ml:
+            model, features = create_ml_model(primary_df)
+            if model:
+                st.session_state.ml_model = model
+                st.session_state.ml_features = features
+
+        st.plotly_chart(create_advanced_chart(primary_df, secondary_df), use_container_width=True)
+
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.header("Market Psychology 🧠")
+            st.metric("RSI", f"{primary_df['RSI'].iloc[-1]:.1f}")
+
+        with col2:
+            st.header("Risk Matrix ⚠️")
+            atr = primary_df['ATR'].iloc[-1]
+            st.metric("Position Size", calculate_position_size(primary_df['Close'].iloc[-1], 
+                      primary_df['Close'].iloc[-1] - atr))
+
+        with col3:
+            st.header("Patterns")
+            for pattern in detect_chart_patterns(primary_df):
+                st.success(pattern)
 
 except Exception as e:
-    st.error(f"Quantum System Failure: {str(e)}")
+    st.error(f"System Error: {str(e)}")
