@@ -102,14 +102,24 @@ def calculate_position_size(price, stop_loss):
     return 0 if risk_per_share < 1e-6 else round((100000 * (risk_per_trade/100)) / risk_per_share)
 
 def create_advanced_chart(primary_df, secondary_df):
-    fig = make_subplots(rows=4, cols=1, shared_xaxes=True, vertical_spacing=0.03,
+    fig = make_subplots(rows=4, cols=1, 
+                       shared_xaxes=True,
+                       vertical_spacing=0.03,
                        row_heights=[0.5, 0.2, 0.2, 0.1],
-                       specs=[[{"secondary_y": True}],[{},{},{}]])
-
-    fig.add_trace(go.Candlestick(x=primary_df.index, open=primary_df['Open'],
-                                high=primary_df['High'], low=primary_df['Low'],
-                                close=primary_df['Close'], name='Price'), row=1, col=1)
-
+                       specs=[[{"secondary_y": True}],
+                              [{"secondary_y": False}],
+                              [{"secondary_y": False}],
+                              [{"secondary_y": False}]])
+    
+    # Primary Price Chart
+    fig.add_trace(go.Candlestick(x=primary_df.index,
+                                open=primary_df['Open'],
+                                high=primary_df['High'],
+                                low=primary_df['Low'],
+                                close=primary_df['Close'],
+                                name='Price'), row=1, col=1)
+    
+    # ML Predictions
     if enable_ml and 'ml_model' in st.session_state and 'ml_features' in st.session_state:
         model = st.session_state.ml_model
         features = st.session_state.ml_features
@@ -118,18 +128,30 @@ def create_advanced_chart(primary_df, secondary_df):
             if not X_pred.empty:
                 predictions = model.predict(X_pred)
                 fig.add_trace(go.Scatter(x=X_pred.index, y=predictions, 
-                                       line=dict(color='gold'), name='ML Forecast'))
+                                       line=dict(color='gold'), name='ML Forecast'),
+                            row=1, col=1)
 
+    # Ichimoku Cloud
     if enable_ichimoku:
-        for span in ['SpanA', 'SpanB']:
-            fig.add_trace(go.Scatter(x=primary_df.index, y=primary_df[f'Ichimoku_{span}'],
-                                    fill='tonexty' if span == 'SpanA' else None,
-                                    line=dict(width=0.5), name=f'Ichimoku {span}'))
+        fig.add_trace(go.Scatter(x=primary_df.index, 
+                              y=primary_df['Ichimoku_SpanA'],
+                              fill='tonexty',
+                              line=dict(color='rgba(0,150,255,0.2)'),
+                              name='Ichimoku Cloud'), row=1, col=1)
+        fig.add_trace(go.Scatter(x=primary_df.index, 
+                              y=primary_df['Ichimoku_SpanB'],
+                              fill='tonexty',
+                              line=dict(color='rgba(255,100,0,0.2)'),
+                              name='Span B'), row=1, col=1)
 
-    fig.add_trace(go.Bar(x=secondary_df.index, y=secondary_df['Volume'],
-                        marker_color='rgba(100,200,255,0.6)'), row=4, col=1)
+    # Volume Chart
+    fig.add_trace(go.Bar(x=secondary_df.index,
+                       y=secondary_df['Volume'],
+                       marker_color='rgba(100,200,255,0.6)'), row=4, col=1)
 
-    fig.update_layout(height=1000, xaxis_rangeslider_visible=False, template='plotly_dark')
+    fig.update_layout(height=1000,
+                     xaxis_rangeslider_visible=False,
+                     template='plotly_dark')
     return fig
 
 class QuantumWebSocket:
