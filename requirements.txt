@@ -3,5 +3,5 @@ yfinance
 pandas 
 plotly 
 numpy 
-talib 
+ta-lib 
 websocket-client
