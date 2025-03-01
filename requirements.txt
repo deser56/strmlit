@@ -1,7 +1,10 @@
-streamlit
+streamlit 
 yfinance 
 pandas 
 plotly 
-numpy
-websocket-client
+numpy 
+ta 
+websocket-client 
+scikit-learn 
+scipy
 matplotlib
