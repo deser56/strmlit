@@ -19,7 +19,7 @@ with st.sidebar:
     st.header("Configuration")
     ticker = st.text_input("Enter Stock Ticker", "AAPL")
     time_interval = st.selectbox("Time Interval", ["1m", "5m", "15m", "30m", "1h", "1d"])
-    lookback = st.number_input("Lookback Period (Days)", 1, 365, 30)
+    lookback = st.number_input("Lookback Period (Days)", 1, 7, 5)
     
     st.subheader("Technical Indicators")
     show_rsi = st.checkbox("RSI", True)
